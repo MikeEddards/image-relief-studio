@@ -22,6 +22,7 @@ NumPy, and Trimesh handle image processing and mesh generation.
 - Side-curve radius and wrap-angle controls from 0° to 180°
 - Pannable and zoomable shaded height-map preview
 - Interactive 3D viewer with rotation, pan, zoom, reset, and wireframe modes
+- Modern dark interface with an Eagles-inspired Kelly green visual theme
 - STL and 3MF export
 
 ## Screens and output
@@ -42,6 +43,24 @@ the export mesh exceeds 70,000 triangles. This does not modify or reduce the STL
 The project has been tested on Windows with Python 3.14.
 
 ## Installation
+
+### Windows installer
+
+Download `ImageReliefStudio-Setup-1.0.0.exe` from the repository's GitHub Actions
+artifacts or Releases page, run it, and follow the setup wizard. The installer is
+per-user by default, does not require administrator access, creates a Start Menu
+shortcut, and includes an optional desktop shortcut.
+
+Current development builds are not digitally code-signed. Windows SmartScreen may
+show an unknown-publisher warning until a trusted code-signing certificate is added.
+
+Windows 11 Smart App Control can block an unsigned installer without offering a
+**Run anyway** button. If that happens, either temporarily turn off Smart App Control
+while installing or use the Python source instructions below. Turning off Smart App
+Control changes a system-wide security setting, so review the warning shown by
+Windows and turn protection back on after installation if your Windows version
+allows it. Running from source avoids the installer, but Windows may still evaluate
+the locally installed Python interpreter and other executable dependencies.
 
 ### Windows
 
@@ -117,7 +136,7 @@ Built-in baseplate shapes include:
 - SVG silhouette
 
 For an SVG baseplate, use a closed, filled silhouette. The SVG is rasterized and
-fitted to the model area. CairoSVG handles SVG conversion.
+fitted to the model area by the bundled resvg renderer.
 
 When **Include baseplate** is disabled, the visible artwork becomes the model
 silhouette. Pure-black areas are excluded in the default brightness configuration.
@@ -219,10 +238,8 @@ python app.py
 
 ### SVG import fails
 
-Confirm that the file is a valid SVG with a filled silhouette. CairoSVG depends on
-Cairo system libraries; consult the
-[CairoSVG installation documentation](https://cairosvg.org/documentation/) if the
-runtime cannot locate Cairo.
+Confirm that the file is valid UTF-8 SVG markup with a closed, filled silhouette.
+Convert unusually complex editor-specific SVG effects to standard paths before import.
 
 ### The 3D viewer is slow
 
@@ -232,8 +249,10 @@ the viewer again. Use the highest resolutions for final export.
 ### The model looks stepped or faceted
 
 Increase mesh resolution and confirm the source image itself has sufficient
-resolution. Modest image smoothing can reduce pixel-scale roughness but can also
-soften small details.
+resolution. Modest image smoothing can reduce pixel-scale roughness and 8-bit
+height banding but can also soften small details. Smoothing is calculated in
+floating point, so values around `0.5` to `1.5` can create intermediate heights
+without re-quantizing the surface back to 256 levels.
 
 ### Export consumes substantial memory or storage
 
@@ -242,7 +261,31 @@ increases; 3MF is generally much smaller than binary STL for dense meshes.
 
 ## Development check
 
-Run a syntax check without launching the GUI:
+Install the development dependencies and run the unit tests:
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+The suite covers height-map conversion, brightness and flat relief modes, inversion,
+baseplate masks, mesh watertightness, cylindrical and flat-center curves, the full
+180-degree side wrap, surface-normal continuity, degenerate and duplicate faces,
+single-body validation, and reloading exported STL/3MF files. Its generated-image
+regression fixture is stored at `tests\fixtures\relief_calibration.png`.
+
+A multi-million-triangle stress test is excluded from the quick suite. Run it on a
+development machine before publishing a release:
+
+```powershell
+python -m pytest -q -m local_quality
+```
+
+That test builds a 2,096,700-face mesh and checks that it remains finite,
+watertight, consistently wound, non-degenerate, duplicate-free, and a single
+connected body.
+
+To run only a syntax check without launching the GUI:
 
 ```powershell
 python -m py_compile app.py relief_mesh.py
@@ -250,6 +293,33 @@ python -m py_compile app.py relief_mesh.py
 
 Generated STL, 3MF, preview images, Python caches, and virtual environments are
 excluded by `.gitignore`.
+
+## Building the Windows installer
+
+Install the packaging dependencies and Inno Setup 6:
+
+```powershell
+python -m pip install -r requirements-build.txt
+winget install --id JRSoftware.InnoSetup -e
+```
+
+Then run:
+
+```powershell
+.\build_windows.ps1
+```
+
+The standalone application is created under `dist\ImageReliefStudio`. The finished
+installer is written to:
+
+```text
+installer\output\ImageReliefStudio-Setup-1.0.0.exe
+```
+
+Use `.\build_windows.ps1 -SkipInstaller` to create only the standalone application.
+PyInstaller must run on Windows to produce the Windows executable. The GitHub Actions
+workflow also builds the installer on demand or whenever a version tag beginning with
+`v` is pushed.
 
 ## License
 

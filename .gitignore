@@ -27,3 +27,7 @@ Thumbs.db
 *.stl
 *.3mf
 viewer_test.png
+
+# Windows installer output
+installer/output/
+build_assets/

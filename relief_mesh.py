@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps, ImageDraw
+from PIL import Image, ImageOps, ImageDraw
 import trimesh
 
 
@@ -44,6 +44,47 @@ def _fit_size(image: Image.Image, max_side: int) -> tuple[int, int]:
     return max(3, round(w * scale)), max(3, round(h * scale))
 
 
+def _gaussian_blur_float(image: np.ndarray, sigma: float) -> np.ndarray:
+    """Blur a float height field without reducing it back to 8-bit precision."""
+    sigma = float(sigma)
+    if sigma <= 0:
+        return image
+    radius = max(1, int(np.ceil(3.0 * sigma)))
+    positions = np.arange(-radius, radius + 1, dtype=np.float32)
+    kernel = np.exp(-(positions * positions) / (2.0 * sigma * sigma))
+    kernel /= kernel.sum()
+
+    horizontal = np.pad(image, ((0, 0), (radius, radius)), mode="edge")
+    horizontal = np.stack(
+        [np.convolve(row, kernel, mode="valid") for row in horizontal]
+    )
+    vertical = np.pad(horizontal, ((radius, radius), (0, 0)), mode="edge")
+    return np.stack(
+        [np.convolve(column, kernel, mode="valid") for column in vertical.T],
+        axis=1,
+    ).astype(np.float32, copy=False)
+
+
+def _resize_grayscale_float(source: Image.Image, size: tuple[int, int]) -> np.ndarray:
+    """Resize luminance as floats so interpolation can create sub-8-bit heights."""
+    if source.mode in {"I", "F", "I;16", "I;16L", "I;16B"}:
+        values = np.asarray(source, dtype=np.float32)
+        if source.mode != "F":
+            maximum = float(np.iinfo(np.asarray(source).dtype).max)
+            values /= maximum
+        else:
+            finite = values[np.isfinite(values)]
+            if finite.size and (finite.min() < 0.0 or finite.max() > 1.0):
+                span = float(finite.max() - finite.min())
+                values = (values - float(finite.min())) / span if span else np.zeros_like(values)
+        grayscale = Image.fromarray(np.clip(values, 0.0, 1.0), mode="F")
+    else:
+        grayscale = ImageOps.grayscale(source.convert("RGB")).convert("F")
+        grayscale = grayscale.point(lambda value: value / 255.0)
+    resized = grayscale.resize(size, Image.Resampling.LANCZOS)
+    return np.clip(np.asarray(resized, dtype=np.float32), 0.0, 1.0)
+
+
 def _base_mask(size: tuple[int, int], settings: MeshSettings) -> np.ndarray:
     w, h = size
     if not settings.use_baseplate:
@@ -63,9 +104,12 @@ def _base_mask(size: tuple[int, int], settings: MeshSettings) -> np.ndarray:
         if not settings.svg_path:
             raise ValueError("Choose an SVG file for the SVG baseplate shape.")
         try:
-            import cairosvg
+            import resvg_py
             from io import BytesIO
-            png = cairosvg.svg2png(url=settings.svg_path, output_width=w, output_height=h)
+            svg_string = Path(settings.svg_path).read_text(encoding="utf-8")
+            png = resvg_py.svg_to_bytes(
+                svg_string=svg_string, width=w, height=h
+            )
             svg_image = Image.open(BytesIO(png)).convert("RGBA")
         except Exception as exc:
             raise ValueError(f"Could not rasterize the SVG: {exc}") from exc
@@ -75,14 +119,21 @@ def _base_mask(size: tuple[int, int], settings: MeshSettings) -> np.ndarray:
 
 
 def prepare_heightmap(image_path: str | Path, settings: MeshSettings):
-    source = Image.open(image_path).convert("RGBA")
+    with Image.open(image_path) as opened:
+        source = opened.copy()
     size = _fit_size(source, max(24, int(settings.resolution)))
-    rgba = source.resize(size, Image.Resampling.LANCZOS)
-    alpha = np.asarray(rgba.getchannel("A"), dtype=np.float32) / 255.0
-    gray_image = ImageOps.grayscale(rgba)
+    rgba = source.convert("RGBA").resize(size, Image.Resampling.LANCZOS)
+    alpha_image = source.getchannel("A").convert("F") if "A" in source.getbands() else None
+    if alpha_image is None:
+        alpha = np.ones((size[1], size[0]), dtype=np.float32)
+    else:
+        alpha = np.asarray(
+            alpha_image.resize(size, Image.Resampling.LANCZOS), dtype=np.float32
+        ) / 255.0
+        alpha = np.clip(alpha, 0.0, 1.0)
+    gray = _resize_grayscale_float(source, size)
     if settings.smoothing > 0:
-        gray_image = gray_image.filter(ImageFilter.GaussianBlur(settings.smoothing))
-    gray = np.asarray(gray_image, dtype=np.float32) / 255.0
+        gray = _gaussian_blur_float(gray, settings.smoothing)
     if settings.invert:
         gray = 1.0 - gray
 
